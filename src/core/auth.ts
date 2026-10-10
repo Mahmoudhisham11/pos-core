@@ -81,8 +81,6 @@ export function requirePermission(ctx: Ctx, permission: string): AuthUser {
 const attempts = new Map<string, [number, number]>(); // key -> [failures, lockedUntil (epoch seconds)]
 const nowS = () => Date.now() / 1000;
 
-export function clearThrottle(): void { attempts.clear(); }
-
 export function throttleCheck(identifier: string): void {
   const [, lockedUntil] = attempts.get(identifier.toLowerCase()) ?? [0, 0];
   if (lockedUntil && lockedUntil > nowS()) {

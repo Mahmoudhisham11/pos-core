@@ -16,7 +16,6 @@ import type { SqlDriver } from "../db/types";
 import { loadsList, money } from "./common";
 
 export type Channel = "cash" | "visa" | "wallets";
-export const CHANNEL_LABEL: Record<Channel, string> = { cash: "نقدي", visa: "فيزا", wallets: "تحويل / محافظ" };
 
 /** Payment method -> channel. A credit sale's down payment is taken in cash. */
 export function channelOf(method: unknown): Channel {

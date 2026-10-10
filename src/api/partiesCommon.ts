@@ -66,8 +66,6 @@ export function pyInt(v: unknown): number {
 /** dict.get(key, default): the default applies only when the key is absent. */
 export const getKey = (d: Record<string, any>, k: string, def: unknown = null) => (k in d ? d[k] : def);
 /** Python `data.get(a) or data.get(b)`. */
-export const firstTruthy = (...vs: unknown[]) => { for (const v of vs) if (v) return v; return vs[vs.length - 1]; };
-
 export interface FieldError { field: string; message: string }
 export function validationError(errors: FieldError[]): HttpError {
   return new HttpError(422, { error_code: "VALIDATION_ERROR", message: "Request validation failed", errors });
