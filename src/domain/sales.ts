@@ -1,6 +1,6 @@
 /** Sales and sales-return business rules. Callers own the transaction (the router wraps writes in one). */
 import type { SqlDriver } from "../db/types";
-import { deleteRow, getById, insertRow } from "../db/sql";
+import { deleteRow, getById, insertRow, updateRow } from "../db/sql";
 import { utcnowIso, cairoDateStr } from "../core/timeutil";
 import { HttpError } from "../http/errors";
 import * as ledger from "./ledger";
@@ -36,6 +36,8 @@ export interface ReturnItemIn {
 export interface ReturnIn {
   id?: string; returnNumber?: string; invoiceId?: string; invoiceNumber?: string; returnedItems?: ReturnItemIn[];
   refundedAmount?: number; returnReason?: string; customer?: any; cashier?: any; date?: string; createdAt?: string;
+  /** closed-day report that still holds the invoice inside it (invoices of old closed days are not separate sales rows) */
+  reportId?: string;
 }
 
 const isObj = (x: unknown): x is Record<string, any> => x !== null && typeof x === "object" && !Array.isArray(x);
@@ -129,6 +131,7 @@ export function parseReturnIn(body: unknown): ReturnIn {
   p.returnNumber = optStr(v, ["returnNumber"], d.returnNumber);
   p.invoiceId = optStr(v, ["invoiceId"], d.invoiceId);
   p.invoiceNumber = optStr(v, ["invoiceNumber"], d.invoiceNumber);
+  p.reportId = optStr(v, ["reportId"], d.reportId);
   if (present(d.returnedItems)) {
     if (!Array.isArray(d.returnedItems)) v.add(["returnedItems"], "Input should be a valid list");
     else {
@@ -411,6 +414,84 @@ function findSale(db: SqlDriver, invoiceId?: string, invoiceNumber?: string): an
   return undefined;
 }
 
+
+// ---------------------------------------------------------------------------
+// Invoices that live only inside a closed day's report (imported from the old app)
+// ---------------------------------------------------------------------------
+interface ArchivedInvoice { report: Record<string, any>; invoices: Record<string, any>[]; index: number; sale: Record<string, any> }
+
+const pick = (o: Record<string, any>, ...keys: string[]): any => { for (const k of keys) if (o[k] !== undefined && o[k] !== null) return o[k]; return undefined; };
+const num = (v: unknown): number => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+
+/** The invoice as a plain sale row (camelCase, items as JSON text) so the normal return rules can run on it. */
+function archivedAsSale(inv: Record<string, any>): Record<string, any> {
+  const total = money(num(pick(inv, "total", "total_amount")));
+  const cost = money(num(pick(inv, "totalCost", "total_cost")));
+  const profit = pick(inv, "totalProfit", "total_profit");
+  const items = loadsList(inv.items);
+  return {
+    ...inv,
+    id: String(pick(inv, "id", "local_id") ?? ""),
+    invoiceNumber: String(pick(inv, "invoiceNumber", "invoice_number") ?? ""),
+    items: dumps(items),
+    customer: jsonField(inv.customer),
+    sellerEmployee: jsonField(pick(inv, "sellerEmployee", "seller_employee")),
+    paymentMethod: String(pick(inv, "paymentMethod", "payment_method") || "نقدي"),
+    subtotal: money(num(pick(inv, "subtotal", "subtotal_amount") ?? total)),
+    discount: money(num(pick(inv, "discount", "discount_amount"))),
+    total, totalCost: cost,
+    totalProfit: profit !== undefined ? money(num(profit)) : money(total - cost),
+    paidAmount: money(num(pick(inv, "paidAmount", "paid_amount") ?? total)),
+    remainingDue: money(num(pick(inv, "remainingDue", "remaining_due"))),
+    status: inv.status || "",
+  };
+}
+
+function findArchivedInvoice(db: SqlDriver, reportId: string, invoiceNumber: string | undefined): ArchivedInvoice {
+  const report = getById<any>(db, "shift_reports", reportId);
+  if (!report) throw badRequest("تقفيلة اليوم غير موجودة", "REPORT_NOT_FOUND");
+  const wanted = (invoiceNumber || "").trim().toLowerCase();
+  const invoices = loadsList(report.invoices);
+  const index = wanted ? invoices.findIndex((i) => String(pick(i, "invoiceNumber", "invoice_number") ?? "").trim().toLowerCase() === wanted) : -1;
+  if (index < 0) throw badRequest("الفاتورة غير موجودة داخل تقفيلة هذا اليوم", "INVOICE_NOT_IN_REPORT");
+  return { report, invoices, index, sale: archivedAsSale(invoices[index]!) };
+}
+
+/** Writes the returned invoice back into its closed day and moves that day's totals by exactly what was returned. */
+function saveArchived(
+  db: SqlDriver, a: ArchivedInvoice, sale: Record<string, any>,
+  before: { total: number; cost: number; profit: number; discount: number; paid: number; qty: number },
+  returnNumber: string, today: string, now: string,
+): void {
+  const afterQty = loadsList(sale.items).reduce((acc, i) => acc + Number(i.quantity || 0), 0);
+  const patched = {
+    ...a.invoices[a.index]!,
+    items: loadsList(sale.items), itemsCount: sale.itemsCount, items_count: sale.itemsCount,
+    subtotal: sale.subtotal, discount: sale.discount, total: sale.total,
+    totalCost: sale.totalCost, total_cost: sale.totalCost, totalProfit: sale.totalProfit, total_profit: sale.totalProfit,
+    paidAmount: sale.paidAmount, paid_amount: sale.paidAmount, remainingDue: sale.remainingDue, remaining_due: sale.remainingDue,
+    changeDue: 0, change_due: 0, status: sale.status, updatedAt: now,
+  };
+  const invoices = a.invoices.map((inv, i) => (i === a.index ? patched : inv));
+  const report = a.report;
+  const breakdown: Record<string, number> = { ...(loadsDict(report.paymentBreakdown) ?? {}) };
+  const refund = money(before.total - sale.total);
+  const method = String(sale.paymentMethod || "نقدي");
+  breakdown[method] = money(Math.max(0, num(breakdown[method]) - refund));
+  const down = (cur: unknown, delta: number) => money(Math.max(0, num(cur) - delta));
+  updateRow(db, "shift_reports", String(report.id), {
+    invoices: dumps(invoices),
+    totalSales: down(report.totalSales, refund),
+    totalCost: down(report.totalCost, before.cost - sale.totalCost),
+    totalProfit: money(num(report.totalProfit) - (before.profit - sale.totalProfit)),
+    totalDiscount: down(report.totalDiscount, before.discount - sale.discount),
+    totalPaid: down(report.totalPaid, before.paid - sale.paidAmount),
+    totalItemsSold: down(report.totalItemsSold, before.qty - afterQty),
+    paymentBreakdown: dumps(breakdown),
+    notes: `${report.notes ? report.notes + "\n" : ""}مرتجع #${returnNumber} بتاريخ ${today} من فاتورة #${sale.invoiceNumber} بقيمة ${pyStr(refund)} ج.م`,
+  });
+}
+
 export function createReturn(db: SqlDriver, p: ReturnIn, nowDate: Date = new Date()): Record<string, any> {
   if (p.id) {
     const existing = getById(db, "sales_returns", p.id);
@@ -421,7 +502,12 @@ export function createReturn(db: SqlDriver, p: ReturnIn, nowDate: Date = new Dat
   const today = cairoDateStr(p.date || now) ?? now.slice(0, 10);
   const retNum = p.returnNumber || docNumber("RET", today);
   const reason = (p.returnReason || "مرتجع مبيعات").trim();
-  const sale: any = findSale(db, p.invoiceId, p.invoiceNumber);
+  let sale: any = findSale(db, p.invoiceId, p.invoiceNumber);
+  let archived: ArchivedInvoice | undefined;
+  if (sale === undefined && p.reportId) {
+    archived = findArchivedInvoice(db, p.reportId, p.invoiceNumber);
+    sale = archived.sale;
+  }
   let requested: Record<string, any>[] = (p.returnedItems || []).map((r) => ({ ...r.dump, quantity: r.qty }));
 
   let refund = 0.0;
@@ -479,6 +565,10 @@ export function createReturn(db: SqlDriver, p: ReturnIn, nowDate: Date = new Dat
     const oldTotal = money(sale.total);
     const oldRemaining = money(sale.remainingDue);
     const oldPaid = money(sale.paidAmount);
+    const before = {
+      total: oldTotal, cost: money(sale.totalCost), profit: money(sale.totalProfit), discount: money(sale.discount), paid: oldPaid,
+      qty: origItems.reduce((acc, o) => acc + Number(o.quantity || 0), 0),
+    };
 
     let newSubtotal: number, newDiscount: number, newTotal: number, newCost: number;
     if (!kept.length) {
@@ -506,9 +596,14 @@ export function createReturn(db: SqlDriver, p: ReturnIn, nowDate: Date = new Dat
     sale.changeDue = 0.0;
     if (!kept.length) sale.status = FULL_RETURN_STATUS;
     sale.updatedAt = now;
-    saveRow(db, "sales", sale);
-    // the invoice belonged to an already closed shift: that day's report must show the new totals too
-    if (sale.shiftReportId) refreshReport(db, String(sale.shiftReportId), now);
+    if (archived) {
+      // the invoice only exists inside its closed day's report: that day's totals move by what was returned
+      saveArchived(db, archived, sale, before, retNum, today, now);
+    } else {
+      saveRow(db, "sales", sale);
+      // the invoice belonged to an already closed shift: that day's report must show the new totals too
+      if (sale.shiftReportId) refreshReport(db, String(sale.shiftReportId), now);
+    }
 
     // customer account
     const custId = customerId(sale.customer);
