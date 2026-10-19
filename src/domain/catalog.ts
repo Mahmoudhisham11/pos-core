@@ -2,7 +2,8 @@
 import type { SqlDriver } from "../db/types";
 import { getById, insertRow, updateRow } from "../db/sql";
 import { HttpError, badRequest } from "../http/errors";
-import { money, newId, qtyRound } from "./common";
+import { EPS, money, newId, qtyRound } from "./common";
+import { logMovement } from "./stock";
 
 // ---------------------------------------------------------------------------
 // Pydantic-style request validation (422 body identical to the legacy handler)
@@ -165,7 +166,10 @@ export function addOrRestock(db: SqlDriver, table: ProductTable, data: ProductIn
       if (sell > 0) patch.sellingPrice = money(sell);
       patch.updatedAt = now;
       updateRow(db, table, existing.id, patch);
-      return getById(db, table, existing.id)!;
+      const saved = getById<any>(db, table, existing.id)!;
+      logMovement(db, table, saved, existing.quantity || 0, saved.quantity, { type: "restock", reason: "إضافة على صنف موجود بنفس الباركود" }, now);
+      // tells the screen the quantity was ADDED to an existing product rather than a new one created
+      return { ...saved, restocked: true };
     }
   }
 
@@ -185,7 +189,9 @@ export function addOrRestock(db: SqlDriver, table: ProductTable, data: ProductIn
     createdAt: now,
     updatedAt: now,
   });
-  return getById(db, table, id)!;
+  const created = getById<any>(db, table, id)!;
+  logMovement(db, table, created, 0, created.quantity, { type: "opening" }, now);
+  return created;
 }
 
 /** Python `str(x)` for scalars. */
@@ -237,7 +243,21 @@ export function applyUpdate(db: SqlDriver, table: ProductTable, prod: Record<str
   if (has(data, "brand")) p.brand = pyScalarStr(data.brand);
 
   const qty = num(data, ["quantity", "stock"]);
-  if (qty !== null) p.quantity = qtyRound(qty);
+  const before = Number(prod.quantity || 0);
+  const quantityChanged = qty !== null && Math.abs(qtyRound(qty) - before) > EPS;
+  if (quantityChanged) {
+    // The edit screen sends the quantity it showed when it was opened. If a sale, return or purchase moved the stock
+    // since then, writing the typed number would silently undo it, so the edit is refused and must be reopened.
+    const expected = num(data, ["expectedQuantity"]);
+    if (expected !== null && Math.abs(expected - before) > EPS) {
+      throw new HttpError(409, {
+        error_code: "STOCK_CHANGED",
+        message: `كمية الصنف اتغيرت أثناء التعديل (بقت ${before}) بسبب بيع أو مرتجع أو توريد. افتح الصنف تاني وعدّل الكمية.`,
+        details: { currentQuantity: before },
+      });
+    }
+    p.quantity = qtyRound(qty);
+  }
 
   const cost = num(data, ["costPrice", "cost_price"]);
   if (cost !== null) {
@@ -257,5 +277,11 @@ export function applyUpdate(db: SqlDriver, table: ProductTable, prod: Record<str
 
   p.updatedAt = now;
   const { id: _id, ...patch } = p;
-  updateRow(db, table, prod.id, patch);
+  // a typed quantity is a count of what is on the shelf now: it is synced as that value, not as a difference from
+  // this device's copy (which may not have every other device's sales yet)
+  updateRow(db, table, prod.id, patch, quantityChanged ? { absolute: ["quantity"] } : {});
+  if (quantityChanged) {
+    const reason = has(data, "reason") ? pyScalarStr(data.reason).trim() : "";
+    logMovement(db, table, p, before, p.quantity, { type: "adjustment", reason: reason || "تعديل الكمية من شاشة الصنف" }, now);
+  }
 }

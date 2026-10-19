@@ -20,6 +20,7 @@ export const COLLECTION_TABLE_MAP: Record<string, string> = {
   nelly_expense_items: "expense_items",
   nelly_monthly_expenses: "monthly_expenses",
   nelly_treasury_transactions: "treasury_transactions",
+  nelly_stock_movements: "stock_movements",
 };
 
 export const TABLE_COLLECTION_MAP: Record<string, string> = Object.fromEntries(

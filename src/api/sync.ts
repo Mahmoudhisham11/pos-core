@@ -369,7 +369,7 @@ export function registerSync(router: Router): void {
 }
 
 const PURGE_ORDER = [
-  "sync_queue", "sync_state", "employee_transactions", "employee_attendance", "employees", "shop_purchase_returns",
+  "sync_queue", "sync_state", "stock_movements", "employee_transactions", "employee_attendance", "employees", "shop_purchase_returns",
   "shop_purchases", "sales_returns", "shift_reports", "sales", "transfers", "shop_products", "products",
   "treasury_transactions", "monthly_expenses", "expense_items", "customers", "suppliers", "users",
 ];

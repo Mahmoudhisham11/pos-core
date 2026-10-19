@@ -1,4 +1,5 @@
 import type { SqlDriver } from "../db/types";
+import { withActor } from "../core/actor";
 import { HttpError } from "./errors";
 import type { ApiRequest, ApiResponse, AuthUser, Ctx, Handler, RouteOpts } from "./types";
 
@@ -40,7 +41,7 @@ export class Router {
         const run = (): ApiResponse => {
           const user = r.opts.public ? ({} as AuthUser) : deps.authenticate(db, req);
           const ctx: Ctx = { db, req, params, query: req.query, body: req.body ?? {}, user, now: deps.now };
-          const out = r.handler(ctx);
+          const out = withActor(user, () => r.handler(ctx));
           if (out && out[RESPONSE]) return { status: out.status, body: out.body };
           return { status: 200, body: out === undefined ? null : out };
         };

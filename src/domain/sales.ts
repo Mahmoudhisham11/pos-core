@@ -5,6 +5,7 @@ import { utcnowIso, cairoDateStr } from "../core/timeutil";
 import { HttpError } from "../http/errors";
 import * as ledger from "./ledger";
 import { refreshReport } from "./shifts";
+import { logMovement, type MovementMeta } from "./stock";
 import {
   EPS, Validator, applyAliases, badRequest, docNumber, dumps, findShopProduct, fmtG, itemKeyMatches, jsonField,
   loadsDict, loadsList, money, newId, pyStr, qtyRound, saveRow, truthy, validationError,
@@ -218,6 +219,7 @@ export function createSale(db: SqlDriver, p: SaleIn, nowDate: Date = new Date())
 
   // 2. Money is recomputed server-side from the lines
   const lineItems: Record<string, any>[] = [];
+  const moves: Array<[any, number, number]> = [];
   let subtotal = 0, totalCost = 0;
   for (const [it, prod] of resolved) {
     const unitPrice = it.sellingPrice !== undefined ? it.sellingPrice : (it.price !== undefined ? it.price : prod.sellingPrice);
@@ -241,7 +243,9 @@ export function createSale(db: SqlDriver, p: SaleIn, nowDate: Date = new Date())
     });
     delete item.price;
     lineItems.push(item);
+    const before = prod.quantity;
     prod.quantity = qtyRound(prod.quantity - it.quantity);
+    moves.push([prod, before, prod.quantity]);
     prod.updatedAt = now;
   }
 
@@ -313,6 +317,9 @@ export function createSale(db: SqlDriver, p: SaleIn, nowDate: Date = new Date())
   // stock + customer changes are flushed together with the invoice
   for (const prod of products.values()) saveRow(db, "shop_products", prod);
   if (cust) saveRow(db, "customers", cust);
+  for (const [prod, before, after] of moves) {
+    logMovement(db, "shop_products", prod, before, after, { type: "sale", refType: "sale", refNumber: invoiceNum }, now);
+  }
 
   const sale = {
     id: p.id || newId(),
@@ -352,7 +359,8 @@ export function voidSale(db: SqlDriver, sale: Record<string, any>, nowDate: Date
   const now = utcnowIso(nowDate);
 
   if (sale.status !== FULL_RETURN_STATUS) {
-    for (const item of loadsList(sale.items)) restock(db, item, Number(item.quantity || 0), now);
+    const meta: MovementMeta = { type: "sale_void", refType: "sale", refNumber: sale.invoiceNumber };
+    for (const item of loadsList(sale.items)) restock(db, item, Number(item.quantity || 0), now, meta);
 
     const custId = customerId(sale.customer);
     const cust: any = custId ? getById(db, "customers", custId) : undefined;
@@ -379,7 +387,7 @@ export function voidSale(db: SqlDriver, sale: Record<string, any>, nowDate: Date
 // ---------------------------------------------------------------------------
 // Sales return
 // ---------------------------------------------------------------------------
-function restock(db: SqlDriver, item: Record<string, any>, qty: number, now: string): void {
+function restock(db: SqlDriver, item: Record<string, any>, qty: number, now: string, meta: MovementMeta): void {
   let prod: any = findShopProduct(db, item.barcode, item.productId || item.product_id || item.id, item.name);
   if (prod === undefined) {
     prod = {
@@ -399,9 +407,11 @@ function restock(db: SqlDriver, item: Record<string, any>, qty: number, now: str
     };
     insertRow(db, "shop_products", prod);
   }
-  prod.quantity = qtyRound((prod.quantity || 0) + qty);
+  const before = prod.quantity || 0;
+  prod.quantity = qtyRound(before + qty);
   prod.updatedAt = now;
   saveRow(db, "shop_products", prod);
+  logMovement(db, "shop_products", prod, before, prod.quantity, meta, now);
 }
 
 function findSale(db: SqlDriver, invoiceId?: string, invoiceNumber?: string): any | undefined {
@@ -551,7 +561,9 @@ export function createReturn(db: SqlDriver, p: ReturnIn, nowDate: Date = new Dat
     origItems.forEach((o, idx) => {
       const rq = returnedQty[idx]!;
       if (rq > 0) {
-        restock(db, o, rq, now);
+        restock(db, o, rq, now, {
+          type: "sale_return", refType: "sales_return", refNumber: retNum, reason: `من الفاتورة #${sale.invoiceNumber}`,
+        });
         returnedRecords.push({ ...o, quantity: rq, subtotal: money(rq * Number(o.sellingPrice || o.price || 0)) });
       }
       const leftQty = qtyRound(Number(o.quantity || 0) - rq);
@@ -655,17 +667,9 @@ export function createReturn(db: SqlDriver, p: ReturnIn, nowDate: Date = new Dat
       }
     }
   } else {
-    // Standalone return (invoice no longer in the open shift, e.g. archived in a closed report)
-    if (!requested.length) throw badRequest("يرجى تحديد صنف واحد على الأقل للمرتجع.", "VALIDATION_ERROR");
-    for (const r of requested) {
-      const qty = Number(r.quantity || 0);
-      if (qty <= 0) throw badRequest("كمية المرتجع يجب أن تكون أكبر من صفر", "INVALID_QUANTITY");
-      restock(db, r, qty, now);
-      returnedRecords.push(r);
-    }
-    const computed = money(requested.reduce((a, r) => a + Number(r.quantity || 0) * Number(r.sellingPrice || r.price || 0), 0));
-    refund = computed > 0 ? computed : money(p.refundedAmount || 0);
-    cashRefund = refund;
+    // A return must come from an invoice it can be checked against: returning goods with no invoice would put any
+    // quantity back on the shelf (and hand out its price) without proof it was ever sold.
+    throw badRequest("الفاتورة غير موجودة على هذا الجهاز. لا يمكن عمل مرتجع بدون فاتورة بيع.", "INVOICE_NOT_FOUND");
   }
 
   const salesReturn = {

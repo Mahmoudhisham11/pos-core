@@ -5,7 +5,7 @@ import type { SqlDriver } from "./types";
 export const PUSHED_TABLES = new Set([
   "shop_products", "products", "transfers", "sales", "shift_reports", "sales_returns", "customers", "suppliers",
   "shop_purchases", "shop_purchase_returns", "employees", "employee_attendance", "employee_transactions",
-  "expense_items", "monthly_expenses", "treasury_transactions",
+  "expense_items", "monthly_expenses", "treasury_transactions", "stock_movements",
 ]);
 
 export const nowIso = () => new Date().toISOString();
@@ -55,7 +55,14 @@ export const DELTA_FIELDS: Record<string, string[]> = {
 
 const deltaRound = (n: number) => Math.round(n * 1e6) / 1e6;
 
-export function updateRow(db: SqlDriver, table: string, id: string, patch: Record<string, unknown>, opts: { skipSync?: boolean; idCol?: string } = {}): void {
+/**
+ * `absolute` names counters this write SETS rather than moves (a stock-take: "there are X on the shelf now"). They are
+ * left out of `__deltas`, so the sync engine uploads the value itself instead of an increment.
+ */
+export function updateRow(
+  db: SqlDriver, table: string, id: string, patch: Record<string, unknown>,
+  opts: { skipSync?: boolean; idCol?: string; absolute?: string[] } = {},
+): void {
   const cols = Object.keys(patch);
   if (!cols.length) return;
   const idCol = opts.idCol ?? "id";
@@ -70,11 +77,15 @@ export function updateRow(db: SqlDriver, table: string, id: string, patch: Recor
     if (counters && before) {
       const deltas: Record<string, number> = {};
       for (const f of counters) {
+        if (opts.absolute?.includes(f)) continue;
         const d = deltaRound(Number(saved[f] || 0) - Number(before[f] || 0));
         deltas[f] = d;
         for (const alias of ALIASES[f] ?? []) deltas[alias] = d; // the API aliases (e.g. stock) carry the same value
       }
       payload.__deltas = deltas;
+      // unique id of this change: the cloud records it, so an increment re-sent after a lost acknowledgement is not
+      // applied twice
+      payload.__opId = crypto.randomUUID();
     }
     enqueue(db, table, String(saved.id), "UPDATE", payload);
   }

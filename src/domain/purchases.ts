@@ -8,6 +8,7 @@ import {
   money, newId, pyStr, qtyRound, saveRow, truthy,
 } from "./common";
 import { Validation, bodyObject, boolField, dumpModel, floatField, isObj, strField } from "./catalog";
+import { logMovement } from "./stock";
 
 // ---------------------------------------------------------------------------
 // Models
@@ -182,7 +183,8 @@ export function createPurchase(db: SqlDriver, p: PurchaseIn, now: string): Recor
       };
     }
 
-    const oldQty = Math.max(0.0, prod.quantity || 0.0);
+    const storedQty = prod.quantity || 0.0;
+    const oldQty = Math.max(0.0, storedQty);
     const oldCost = prod.wholesalePrice || prod.costPrice || 0.0;
     if (it.cost > 0) {
       // weighted-average cost keeps profit figures honest across purchases at different prices
@@ -194,6 +196,7 @@ export function createPurchase(db: SqlDriver, p: PurchaseIn, now: string): Recor
     prod.updatedAt = now;
     if (isNew) insertRow(db, "shop_products", pickCols(prod));
     else saveRow(db, "shop_products", prod);
+    logMovement(db, "shop_products", prod, storedQty, prod.quantity, { type: "purchase", refType: "shop_purchase", refNumber: invoiceNum }, now);
 
     const line = { ...it.dump, productId: prod.id, name: name || prod.name, barcode: prod.barcode || "", costPrice: it.cost };
     storedItems.push(line);
@@ -288,9 +291,14 @@ export function createPurchaseReturn(db: SqlDriver, p: PurchaseReturnIn, now: st
     if (prod.quantity + EPS < it.quantity) {
       throw badRequest(`الرصيد في المحل لا يكفي لإرجاع ${prod.name} (المتاح ${fmtG(prod.quantity)})`, "INSUFFICIENT_STOCK");
     }
+    const before = prod.quantity;
     prod.quantity = qtyRound(prod.quantity - it.quantity);
     prod.updatedAt = now;
     saveRow(db, "shop_products", prod);
+    logMovement(db, "shop_products", prod, before, prod.quantity, {
+      type: "purchase_return", refType: "shop_purchase_return", refNumber: retNum,
+      reason: purchase ? `من فاتورة الشراء #${purchase.invoiceNumber}` : "",
+    }, now);
 
     refund += it.quantity * unitCost;
     records.push({ ...item, productId: prod.id, costPrice: money(unitCost) });
@@ -356,7 +364,13 @@ export function createTransfer(db: SqlDriver, p: TransferIn, now: string): Recor
   const name = p.productName;
   let shopP: Record<string, any> | undefined = findShopProduct(db, p.barcode, p.productId, name);
   let whP: Record<string, any> | undefined = findWarehouseProduct(db, p.barcode, p.productId, name);
+  // The id sent belongs to one side only: find the other side by the found product's own barcode / name too, so a
+  // transfer never creates a second copy of a product that already exists there under that barcode or name.
+  if (shopP === undefined && whP !== undefined) shopP = findShopProduct(db, whP.barcode, null, whP.name);
+  if (whP === undefined && shopP !== undefined) whP = findWarehouseProduct(db, shopP.barcode, null, shopP.name);
   let shopNew = false, whNew = false;
+  const whBefore = whP ? whP.quantity || 0 : 0;
+  const shopBefore = shopP ? shopP.quantity || 0 : 0;
 
   if (p.direction === "to_shop") {
     if (whP === undefined) throw badRequest("الصنف غير موجود في المخزن", "PRODUCT_NOT_FOUND");
@@ -381,6 +395,10 @@ export function createTransfer(db: SqlDriver, p: TransferIn, now: string): Recor
 
   const src = p.direction === "to_shop" ? whP! : shopP!;
   const id = newId();
+  const toShop = p.direction === "to_shop";
+  const ref = { refType: "transfer", refNumber: id };
+  logMovement(db, "products", whP!, whBefore, whP!.quantity, { type: toShop ? "transfer_out" : "transfer_in", ...ref, reason: toShop ? "إلى المحل" : "من المحل" }, now);
+  logMovement(db, "shop_products", shopP!, shopBefore, shopP!.quantity, { type: toShop ? "transfer_in" : "transfer_out", ...ref, reason: toShop ? "من المخزن" : "إلى المخزن" }, now);
   insertRow(db, "transfers", {
     id,
     productId: p.productId || src.id,

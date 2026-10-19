@@ -4,6 +4,7 @@ import { Validation, applyUpdate, addOrRestock, bodyObject, parseProductIn } fro
 import { httpError } from "../http/errors";
 import { serializeList, serializeRow } from "../http/serialize";
 import { getById, deleteRow } from "../db/sql";
+import { logMovement } from "../domain/stock";
 import type { Router } from "../http/router";
 import type { Ctx } from "../http/types";
 
@@ -70,6 +71,7 @@ export function registerProductCrud(router: Router, prefix: string, table: Table
     const prod = getById(ctx.db, table, ctx.params.product_id!);
     if (!prod) throw httpError(404, o.notFoundMutate);
     deleteRow(ctx.db, table, prod.id);
+    logMovement(ctx.db, table, prod, prod.quantity || 0, 0, { type: "deleted" }, ctx.now().toISOString());
     return { success: true, message: o.deleted };
   });
 }
