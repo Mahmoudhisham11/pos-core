@@ -1,17 +1,19 @@
 /** Sales and sales-return business rules. Callers own the transaction (the router wraps writes in one). */
 import type { SqlDriver } from "../db/types";
+import { settings } from "../core/config";
+import { cashMethod, creditMethod, isCreditMethod } from "../core/payments";
 import { deleteRow, getById, insertRow, updateRow } from "../db/sql";
 import { utcnowIso, cairoDateStr } from "../core/timeutil";
 import { HttpError } from "../http/errors";
 import * as ledger from "./ledger";
 import { refreshReport } from "./shifts";
 import { logMovement, type MovementMeta } from "./stock";
+import { variantFields } from "./variants";
 import {
   EPS, Validator, applyAliases, badRequest, docNumber, dumps, findShopProduct, fmtG, itemKeyMatches, jsonField,
   loadsDict, loadsList, money, newId, pyStr, qtyRound, saveRow, truthy, validationError,
 } from "./common";
 
-export const CREDIT_METHOD = "آجل";
 export const FULL_RETURN_STATUS = "مرتجعة";
 
 // ---------------------------------------------------------------------------
@@ -240,6 +242,7 @@ export function createSale(db: SqlDriver, p: SaleIn, nowDate: Date = new Date())
       costPrice: money(unitCost),
       subtotal: lineSub,
       profit: money(lineSub - lineCost),
+      ...variantFields(prod), // size / colour ... of the variant sold (nothing for a product without variants)
     });
     delete item.price;
     lineItems.push(item);
@@ -257,12 +260,12 @@ export function createSale(db: SqlDriver, p: SaleIn, nowDate: Date = new Date())
   // Same rule as the cashier screen, enforced here for every device: a discount may never take the invoice down to
   // its wholesale cost (weighted-average purchase cost) or below it.
   if (discount > 0 && totalCost > 0 && total <= totalCost + EPS) {
-    throw badRequest(`ممنوع تطبيق هذا الخصم: لا يمكن أن يصل سعر البيع لسعر جملة البضاعة (${pyStr(totalCost)} ج.م) أو أقل منه.`, "DISCOUNT_BELOW_COST");
+    throw badRequest(`ممنوع تطبيق هذا الخصم: لا يمكن أن يصل سعر البيع لسعر جملة البضاعة (${pyStr(totalCost)} ${settings.CURRENCY_SYMBOL}) أو أقل منه.`, "DISCOUNT_BELOW_COST");
   }
   const totalProfit = money(total - totalCost);
 
-  const method = (p.paymentMethod || "نقدي").trim();
-  const paid = money(p.paidAmount !== undefined ? p.paidAmount : (method === CREDIT_METHOD ? 0.0 : total));
+  const method = (p.paymentMethod || cashMethod()).trim();
+  const paid = money(p.paidAmount !== undefined ? p.paidAmount : (isCreditMethod(method) ? 0.0 : total));
   const remaining = money(Math.max(0.0, total - paid));
   const changeDue = money(Math.max(0.0, paid - total));
 
@@ -272,7 +275,7 @@ export function createSale(db: SqlDriver, p: SaleIn, nowDate: Date = new Date())
   if (remaining > 0 && !cust) throw badRequest("البيع الآجل أو الجزئي يتطلب اختيار عميل مسجل", "CUSTOMER_REQUIRED");
 
   const invoiceNum = uniqueInvoiceNumber(db, p.invoiceNumber, today);
-  let custName = p.customerName || "عميل نقدي";
+  let custName = p.customerName || settings.DEFAULT_CUSTOMER_NAME;
   if (cust) {
     const prevBalance = money(cust.remainingBalance);
     custName = cust.name;
@@ -289,8 +292,8 @@ export function createSale(db: SqlDriver, p: SaleIn, nowDate: Date = new Date())
         prevBalance,
         cust.remainingBalance,
         `فاتورة مبيعات رقم ${invoiceNum}`
-          + (remaining > 0 ? ` (المتبقي: ${pyStr(remaining)} ج.م من إجمالي: ${pyStr(total)} ج.م)` : ` (مسددة بالكامل: ${pyStr(total)} ج.م)`),
-        remaining > 0 ? CREDIT_METHOD : method,
+          + (remaining > 0 ? ` (المتبقي: ${pyStr(remaining)} ${settings.CURRENCY_SYMBOL} من إجمالي: ${pyStr(total)} ${settings.CURRENCY_SYMBOL})` : ` (مسددة بالكامل: ${pyStr(total)} ${settings.CURRENCY_SYMBOL})`),
+        remaining > 0 ? (creditMethod() ?? method) : method,
         { invoiceNumber: invoiceNum },
       ),
     );
@@ -394,8 +397,8 @@ function restock(db: SqlDriver, item: Record<string, any>, qty: number, now: str
       id: newId(),
       barcode: (item.barcode || "").trim(),
       name: item.name || item.productName || "صنف مرتجع",
-      category: item.category || "أخرى",
-      brand: item.brand || "Nelly",
+      category: item.category || settings.DEFAULT_CATEGORY,
+      brand: item.brand || settings.DEFAULT_BRAND,
       quantity: 0.0,
       costPrice: money(item.costPrice || item.wholesalePrice || 0),
       wholesalePrice: money(item.wholesalePrice || item.costPrice || 0),
@@ -404,6 +407,7 @@ function restock(db: SqlDriver, item: Record<string, any>, qty: number, now: str
       description: "",
       createdAt: now,
       updatedAt: null,
+      ...variantFields(item), // a returned variant that was deleted comes back into its own group
     };
     insertRow(db, "shop_products", prod);
   }
@@ -446,7 +450,7 @@ function archivedAsSale(inv: Record<string, any>): Record<string, any> {
     items: dumps(items),
     customer: jsonField(inv.customer),
     sellerEmployee: jsonField(pick(inv, "sellerEmployee", "seller_employee")),
-    paymentMethod: String(pick(inv, "paymentMethod", "payment_method") || "نقدي"),
+    paymentMethod: String(pick(inv, "paymentMethod", "payment_method") || cashMethod()),
     subtotal: money(num(pick(inv, "subtotal", "subtotal_amount") ?? total)),
     discount: money(num(pick(inv, "discount", "discount_amount"))),
     total, totalCost: cost,
@@ -486,7 +490,7 @@ function saveArchived(
   const report = a.report;
   const breakdown: Record<string, number> = { ...(loadsDict(report.paymentBreakdown) ?? {}) };
   const refund = money(before.total - sale.total);
-  const method = String(sale.paymentMethod || "نقدي");
+  const method = String(sale.paymentMethod || cashMethod());
   breakdown[method] = money(Math.max(0, num(breakdown[method]) - refund));
   const down = (cur: unknown, delta: number) => money(Math.max(0, num(cur) - delta));
   updateRow(db, "shift_reports", String(report.id), {
@@ -498,7 +502,7 @@ function saveArchived(
     totalPaid: down(report.totalPaid, before.paid - sale.paidAmount),
     totalItemsSold: down(report.totalItemsSold, before.qty - afterQty),
     paymentBreakdown: dumps(breakdown),
-    notes: `${report.notes ? report.notes + "\n" : ""}مرتجع #${returnNumber} بتاريخ ${today} من فاتورة #${sale.invoiceNumber} بقيمة ${pyStr(refund)} ج.م`,
+    notes: `${report.notes ? report.notes + "\n" : ""}مرتجع #${returnNumber} بتاريخ ${today} من فاتورة #${sale.invoiceNumber} بقيمة ${pyStr(refund)} ${settings.CURRENCY_SYMBOL}`,
   });
 }
 
@@ -522,7 +526,7 @@ export function createReturn(db: SqlDriver, p: ReturnIn, nowDate: Date = new Dat
 
   let refund = 0.0;
   let cashRefund = 0.0; // money actually handed back (the rest only reduced a credit invoice's debt)
-  let refundMethod = "نقدي";
+  let refundMethod = cashMethod();
   const returnedRecords: Record<string, any>[] = [];
 
   if (sale !== undefined) {
@@ -597,7 +601,7 @@ export function createReturn(db: SqlDriver, p: ReturnIn, nowDate: Date = new Dat
     const debtPart = money(Math.min(refund, oldRemaining));
     const cashPart = money(refund - debtPart);
     cashRefund = cashPart;
-    refundMethod = sale.paymentMethod || "نقدي"; // given back the way it was paid (a credit sale's down payment: cash)
+    refundMethod = sale.paymentMethod || cashMethod(); // given back the way it was paid (a credit sale's down payment: cash)
 
     sale.items = dumps(kept);
     sale.itemsCount = Math.trunc(kept.reduce((a, i) => a + Number(i.quantity), 0));
@@ -631,7 +635,7 @@ export function createReturn(db: SqlDriver, p: ReturnIn, nowDate: Date = new Dat
         ledger.makeTx(
           "ctx_ret", "مرتجع مبيعات", refund, prev, cust.remainingBalance,
           `مرتجع مبيعات #${retNum} من الفاتورة #${sale.invoiceNumber}`
-            + (debtPart > 0 ? ` (تم تخفيض ${pyStr(debtPart)} ج.م من المديونية)` : ""),
+            + (debtPart > 0 ? ` (تم تخفيض ${pyStr(debtPart)} ${settings.CURRENCY_SYMBOL} من المديونية)` : ""),
           "مرتجع", { invoiceNumber: sale.invoiceNumber, returnNumber: retNum },
         ),
       );

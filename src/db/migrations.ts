@@ -52,6 +52,20 @@ function v6VoidedTxIds(db: SqlDriver): void {
   for (const t of ["customers", "suppliers", "monthly_expenses"]) addColumn(db, t, "voidedTxIds", "TEXT");
 }
 
+/**
+ * Product variants (size / colour / ...): every variant is a full product row; rows of one model share `groupId`.
+ * `groupName` is the model name, `variantLabel` the human label ("أسود / L") and `attributes` a JSON object.
+ */
+function v7ProductVariants(db: SqlDriver): void {
+  for (const t of ["shop_products", "products"]) {
+    addColumn(db, t, "groupId", "VARCHAR(100)");
+    addColumn(db, t, "groupName", "VARCHAR(255)");
+    addColumn(db, t, "variantLabel", "VARCHAR(255)");
+    addColumn(db, t, "attributes", "TEXT");
+    db.exec(`CREATE INDEX IF NOT EXISTS "ix_${t}_groupId" ON "${t}" ("groupId")`);
+  }
+}
+
 export const MIGRATIONS: Array<[number, string, (db: SqlDriver) => void]> = [
   [1, "v1_customer_type_and_shift_link", v1CustomerTypeAndShiftLink],
   [2, "v2_hash_plaintext_passwords", v2HashPlaintextPasswords],
@@ -59,6 +73,7 @@ export const MIGRATIONS: Array<[number, string, (db: SqlDriver) => void]> = [
   [4, "v4_app_meta", v4AppMeta],
   [5, "v5_return_cash_refund", v5ReturnCashRefund],
   [6, "v6_voided_tx_ids", v6VoidedTxIds],
+  [7, "v7_product_variants", v7ProductVariants],
 ];
 
 /** Housekeeping: revoked tokens past their expiry and idempotency keys older than a week. */

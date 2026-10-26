@@ -16,6 +16,8 @@ import { registerCustomers } from "./api/customers";
 import { registerEmployees } from "./api/employees";
 import { registerExpenses } from "./api/expenses";
 import { registerHealth } from "./api/health";
+import { registerMeta } from "./api/meta";
+import { registerProductGroups } from "./api/productGroups";
 import { registerInventory } from "./api/inventory";
 import { registerProducts } from "./api/products";
 import { registerRoles } from "./api/roles";
@@ -33,6 +35,11 @@ export {
 export { runMigrations } from "./db/migrations";
 export { wrapWasmSqlite } from "./db/wasmSqlite";
 export { configure, settings } from "./core/config";
+export { collectionTableMap, tableCollectionMap } from "./core/syncHooks";
+export { syncCollections, CORE_VERSION } from "./api/meta";
+export { applyItems } from "./api/sync";
+export { canonicalMethod, cashMethod, channelOf, creditMethod, findMethod, isCreditMethod, methodNames } from "./core/payments";
+export type { Channel, PaymentMethod } from "./core/config";
 export type { CloudSync } from "./core/cloudSync";
 export type { CloudLink, CloudVerifier } from "./core/cloudAccount";
 export type { ApiRequest, ApiResponse } from "./http/types";
@@ -58,11 +65,14 @@ export function createBackend(db: SqlDriver, opts: { now?: () => Date; cloudSync
   registerAuth(router);
   registerCloud(router);
   registerHealth(router);
+  registerMeta(router);
   registerUsers(router);
   registerRoles(router);
   registerBranches(router);
   registerShop(router);
+  registerProductGroups(router, "/shop/product-groups", "shop_products", 3);
   registerProducts(router);
+  registerProductGroups(router, "/product-groups", "products", 5);
   registerCategories(router);
   registerInventory(router);
   registerSales(router);
@@ -89,7 +99,7 @@ export function createBackend(db: SqlDriver, opts: { now?: () => Date; cloudSync
       }
       const path = req.path === "/api" ? "/" : req.path.startsWith("/api/") ? req.path.slice(4) : req.path;
       if (req.method.toUpperCase() === "GET" && path === "/") {
-        return { status: 200, body: { app: "Nelly Desktop ERP API", status: "online", api: settings.API_V1_STR } };
+        return { status: 200, body: { app: settings.APP_NAME, status: "online", api: settings.API_V1_STR } };
       }
       const clean: ApiRequest = { ...req, path, headers: req.headers ?? {}, query };
       if (req.method.toUpperCase() === "POST" && path.replace(/\/$/, "") === "/auth/cloud-login") {

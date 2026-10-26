@@ -34,13 +34,14 @@ export function registerProductCrud(router: Router, prefix: string, table: Table
     const limit = parseLimit(ctx);
     const where: string[] = [];
     const args: unknown[] = [];
-    const { search, category } = ctx.query;
+    const { search, category, groupId } = ctx.query;
     if (search) {
       where.push("(LOWER(name) LIKE LOWER(?) OR LOWER(barcode) LIKE LOWER(?))");
       const s = `%${search.trim()}%`;
       args.push(s, s);
     }
     if (category && category !== "all") { where.push("category = ?"); args.push(category); }
+    if (groupId) { where.push(`"groupId" = ?`); args.push(groupId); }
     const sql = `SELECT * FROM "${table}"${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY name ASC LIMIT ?`;
     return serializeList(ctx.db.all(sql, [...args, limit]));
   });

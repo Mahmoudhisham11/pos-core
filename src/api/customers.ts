@@ -5,6 +5,8 @@ import type { Router } from "../http/router";
 import type { Ctx } from "../http/types";
 import { utcnowIso } from "../core/timeutil";
 import { requireManager } from "../core/auth";
+import { settings } from "../core/config";
+import { cashMethod } from "../core/payments";
 import { Validator, bodyObject, dumps, intQuery, loadsList, money, pyFloat, pyStr } from "./partiesCommon";
 import { customerPayment, makeTx } from "./partiesLedger";
 
@@ -49,7 +51,7 @@ export function registerCustomers(router: Router): void {
     }
     const id = uid();
     insertRow(ctx.db, "customers", {
-      id, name: name.trim(), phone: phone || "", address: address || "", type: type || "قطاعي",
+      id, name: name.trim(), phone: phone || "", address: address || "", type: type || settings.DEFAULT_CUSTOMER_TYPE,
       balance: bal, remainingBalance: bal, totalPurchases: 0.0, totalPaid: 0.0,
       transactions: dumps(txs), notes: notes || "", createdAt: now, updatedAt: now,
     });
@@ -68,7 +70,7 @@ export function registerCustomers(router: Router): void {
     const amount = v.num("amount", { required: true, gt: 0 }) as number;
     const notes = v.str("notes"), method = v.str("method");
     v.done();
-    const { tx, patch } = customerPayment(cust, amount, notes || "", method || "نقدي", utcnowIso(ctx.now()));
+    const { tx, patch } = customerPayment(cust, amount, notes || "", method || cashMethod(), utcnowIso(ctx.now()));
     updateRow(ctx.db, "customers", cust.id, patch);
     const fresh = getById(ctx.db, "customers", cust.id);
     return { success: true, newBalance: fresh!.remainingBalance, transaction: tx, customer: serializeRow(fresh) };

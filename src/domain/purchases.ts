@@ -1,5 +1,7 @@
 /** Shop purchases, purchase returns and warehouse<->shop transfers. */
 import type { SqlDriver } from "../db/types";
+import { settings } from "../core/config";
+import { cashMethod } from "../core/payments";
 import { getById, insertRow } from "../db/sql";
 import { badRequest } from "../http/errors";
 import { appendTx, makeTx } from "./ledger";
@@ -9,6 +11,7 @@ import {
 } from "./common";
 import { Validation, bodyObject, boolField, dumpModel, floatField, isObj, strField } from "./catalog";
 import { logMovement } from "./stock";
+import { variantFields, variantName } from "./variants";
 
 // ---------------------------------------------------------------------------
 // Models
@@ -66,7 +69,7 @@ export function parsePurchaseIn(body: unknown): PurchaseIn {
     supplier: raw.supplier ?? null,
     totalCost: floatField(v, raw, "totalCost", { ge: 0 }), totalAmount: floatField(v, raw, "totalAmount", { ge: 0 }),
     paidAmount: floatField(v, raw, "paidAmount", { ge: 0 }),
-    paymentMethod: strField(v, raw, "paymentMethod", { def: "نقدي" }), notes: strField(v, raw, "notes", { def: "" }),
+    paymentMethod: strField(v, raw, "paymentMethod", { def: cashMethod() }), notes: strField(v, raw, "notes", { def: "" }),
     createdBy: raw.createdBy ?? null, date: strField(v, raw, "date"),
   };
   v.check();
@@ -143,7 +146,10 @@ function supplierFrom(db: SqlDriver, raw: unknown): Record<string, any> | undefi
   return sid ? getById(db, "suppliers", String(sid)) : undefined;
 }
 
-const PRODUCT_COLS = ["id", "barcode", "name", "category", "brand", "quantity", "costPrice", "wholesalePrice", "sellingPrice", "minThreshold", "description", "createdAt", "updatedAt"];
+const PRODUCT_COLS = [
+  "id", "barcode", "name", "category", "brand", "quantity", "costPrice", "wholesalePrice", "sellingPrice", "minThreshold",
+  "description", "createdAt", "updatedAt", "groupId", "groupName", "variantLabel", "attributes",
+];
 const pickCols = (row: Record<string, any>) => Object.fromEntries(PRODUCT_COLS.filter((c) => c in row).map((c) => [c, row[c]]));
 
 /** Returns the saved purchase row. */
@@ -173,13 +179,15 @@ export function createPurchase(db: SqlDriver, p: PurchaseIn, now: string): Recor
   const storedItems: Record<string, any>[] = [];
   for (const it of p.items) {
     let prod: Record<string, any> | undefined = findShopProduct(db, it.barcode, it.productId, it.name || it.productName);
-    const name = (it.name || it.productName || "").trim();
+    const vf = variantFields(it.dump);
+    const name = (it.name || it.productName || "").trim() || (vf.groupName ? variantName(vf.groupName, vf.variantLabel) : "");
     const isNew = prod === undefined;
     if (prod === undefined) {
       if (!name) throw badRequest("اسم الصنف مطلوب للأصناف الجديدة", "VALIDATION_ERROR");
       prod = {
-        id: newId(), barcode: (it.barcode || "").trim(), name, category: it.category || "أخرى", brand: it.brand || "Nelly",
+        id: newId(), barcode: (it.barcode || "").trim(), name, category: it.category || settings.DEFAULT_CATEGORY, brand: it.brand || settings.DEFAULT_BRAND,
         quantity: 0.0, costPrice: 0.0, wholesalePrice: 0.0, sellingPrice: 0.0, minThreshold: 3, description: "", createdAt: now,
+        ...vf, // a new variant bought into an existing model (groupId / groupName / attributes on the line)
       };
     }
 
@@ -198,7 +206,7 @@ export function createPurchase(db: SqlDriver, p: PurchaseIn, now: string): Recor
     else saveRow(db, "shop_products", prod);
     logMovement(db, "shop_products", prod, storedQty, prod.quantity, { type: "purchase", refType: "shop_purchase", refNumber: invoiceNum }, now);
 
-    const line = { ...it.dump, productId: prod.id, name: name || prod.name, barcode: prod.barcode || "", costPrice: it.cost };
+    const line = { ...it.dump, productId: prod.id, name: name || prod.name, barcode: prod.barcode || "", costPrice: it.cost, ...variantFields(prod) };
     storedItems.push(line);
   }
 
@@ -213,8 +221,8 @@ export function createPurchase(db: SqlDriver, p: PurchaseIn, now: string): Recor
       supplier,
       makeTx(
         "tx_pur", "فاتورة مشتريات", totalCost, prev, supplier.remainingBalance,
-        `فاتورة مشتريات رقم ${invoiceNum} (مدفوع: ${pyStr(paid)} ج.م، متبقي: ${pyStr(remaining)} ج.م)`,
-        p.paymentMethod || "نقدي", { invoiceNumber: invoiceNum },
+        `فاتورة مشتريات رقم ${invoiceNum} (مدفوع: ${pyStr(paid)} ${settings.CURRENCY_SYMBOL}، متبقي: ${pyStr(remaining)} ${settings.CURRENCY_SYMBOL})`,
+        p.paymentMethod || cashMethod(), { invoiceNumber: invoiceNum },
       ),
     );
     saveRow(db, "suppliers", supplier);
@@ -231,7 +239,7 @@ export function createPurchase(db: SqlDriver, p: PurchaseIn, now: string): Recor
     totalCost,
     paidAmount: paid,
     remainingDue: remaining,
-    paymentMethod: p.paymentMethod || "نقدي",
+    paymentMethod: p.paymentMethod || cashMethod(),
     status: "COMPLETED",
     notes: p.notes || "",
     createdBy: jsonField(p.createdBy),
@@ -318,7 +326,7 @@ export function createPurchaseReturn(db: SqlDriver, p: PurchaseReturnIn, now: st
       supplier,
       makeTx(
         "tx_pret", "مرتجع مشتريات", refund, prev, supplier.remainingBalance,
-        `مرتجع مشتريات #${retNum}` + (debtCut > 0 ? ` (تم تخفيض ${pyStr(debtCut)} ج.م من المستحقات)` : ""),
+        `مرتجع مشتريات #${retNum}` + (debtCut > 0 ? ` (تم تخفيض ${pyStr(debtCut)} ${settings.CURRENCY_SYMBOL} من المستحقات)` : ""),
         "مرتجع", { returnNumber: retNum },
       ),
     );
@@ -354,6 +362,7 @@ function cloneProduct(src: Record<string, any>, qty: number, now: string): Recor
     quantity: qty, costPrice: src.costPrice, wholesalePrice: src.wholesalePrice,
     sellingPrice: src.sellingPrice, minThreshold: src.minThreshold, description: src.description,
     createdAt: now, updatedAt: now,
+    ...variantFields(src), // the copy on the other side stays a variant of the same model
   };
 }
 

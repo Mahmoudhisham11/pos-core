@@ -5,6 +5,7 @@ import type { Router } from "../http/router";
 import type { Ctx } from "../http/types";
 import { utcnowIso } from "../core/timeutil";
 import { requireManager } from "../core/auth";
+import { cashMethod } from "../core/payments";
 import { Validator, bodyObject, dumps, intQuery, loadsIds, loadsList, money, pyStr } from "./partiesCommon";
 import { makeTx, supplierMovement } from "./partiesLedger";
 
@@ -67,7 +68,7 @@ export function registerSuppliers(router: Router): void {
     const amount = v.num("amount", { required: true, gt: 0 }) as number;
     const notes = v.str("notes"), method = v.str("method"), type = v.str("type"); // "payment" (we pay) | "charge" (we owe more)
     v.done();
-    const { tx, patch } = supplierMovement(supp, amount, type || "payment", notes || "", method || "نقدي", utcnowIso(ctx.now()));
+    const { tx, patch } = supplierMovement(supp, amount, type || "payment", notes || "", method || cashMethod(), utcnowIso(ctx.now()));
     updateRow(ctx.db, "suppliers", supp.id, patch);
     const fresh = getById(ctx.db, "suppliers", supp.id);
     return { success: true, newBalance: fresh!.remainingBalance, transaction: tx, supplier: serializeRow(fresh) };

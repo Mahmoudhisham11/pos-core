@@ -26,7 +26,7 @@ export interface CloudLink {
 export type CloudVerifier = (idToken: string, uid: string) => Promise<CloudLink>;
 
 /** Marks a request whose cloud login was verified by the host (a Symbol never survives IPC / postMessage / JSON). */
-export const CLOUD_LINK = Symbol("nelly.cloudLink");
+export const CLOUD_LINK = Symbol("pos.cloudLink");
 
 export class CloudAuthError extends Error {}
 

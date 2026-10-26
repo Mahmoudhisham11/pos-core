@@ -1,9 +1,11 @@
 /** Product catalogue operations shared by the shop (`shop_products`) and warehouse (`products`) tables. */
 import type { SqlDriver } from "../db/types";
+import { settings } from "../core/config";
 import { getById, insertRow, updateRow } from "../db/sql";
 import { HttpError, badRequest } from "../http/errors";
 import { EPS, money, newId, qtyRound } from "./common";
 import { logMovement } from "./stock";
+import { variantPatch } from "./variants";
 
 // ---------------------------------------------------------------------------
 // Pydantic-style request validation (422 body identical to the legacy handler)
@@ -124,8 +126,8 @@ export function parseProductIn(body: unknown): ProductIn {
   const out = {
     barcode: strField(v, raw, "barcode", { def: "" }),
     name: strField(v, raw, "name", { required: true, min: 1, max: 255 }),
-    category: strField(v, raw, "category", { def: "أخرى" }),
-    brand: strField(v, raw, "brand", { def: "Nelly" }),
+    category: strField(v, raw, "category", { def: settings.DEFAULT_CATEGORY }),
+    brand: strField(v, raw, "brand", { def: settings.DEFAULT_BRAND }),
     quantity: raw.quantity === undefined ? 0 : floatField(v, raw, "quantity", { ge: 0 }),
     costPrice: raw.costPrice === undefined ? 0 : floatField(v, raw, "costPrice", { ge: 0 }),
     wholesalePrice: raw.wholesalePrice === undefined ? 0 : floatField(v, raw, "wholesalePrice", { ge: 0 }),
@@ -178,8 +180,8 @@ export function addOrRestock(db: SqlDriver, table: ProductTable, data: ProductIn
     id,
     barcode,
     name: data.name.trim(),
-    category: data.category || "أخرى",
-    brand: data.brand || "Nelly",
+    category: data.category || settings.DEFAULT_CATEGORY,
+    brand: data.brand || settings.DEFAULT_BRAND,
     quantity: qtyRound(data.quantity || 0),
     costPrice: money(cost),
     wholesalePrice: money(wholesale),
@@ -274,6 +276,8 @@ export function applyUpdate(db: SqlDriver, table: ProductTable, prod: Record<str
   const threshold = num(data, ["minThreshold"]);
   if (threshold !== null) p.minThreshold = Math.trunc(threshold);
   if (has(data, "description")) p.description = pyScalarStr(data.description);
+  // a variant's own size/colour... (attributes / variantLabel): rebuilds its label and full name
+  Object.assign(p, variantPatch(db, table, prod, data));
 
   p.updatedAt = now;
   const { id: _id, ...patch } = p;

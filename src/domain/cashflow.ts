@@ -12,18 +12,13 @@
  *  - advances         employee advances / withdrawals (paid from the drawer)
  *  +/- treasury       manual deposits, withdrawals and transfers between channels
  */
+import type { Channel } from "../core/config";
+import { cashMethod, channelOf, isCreditMethod } from "../core/payments";
 import type { SqlDriver } from "../db/types";
 import { loadsList, money } from "./common";
 
-export type Channel = "cash" | "visa" | "wallets";
-
-/** Payment method -> channel. A credit sale's down payment is taken in cash. */
-export function channelOf(method: unknown): Channel {
-  const m = String(method ?? "").trim().toLowerCase();
-  if (!m || ["نقدي", "كاش", "cash", "آجل", "اجل"].includes(m)) return "cash";
-  if (["فيزا", "visa", "بطاقة", "بطاقة بنكية", "card"].includes(m) || m.startsWith("فيزا")) return "visa";
-  return "wallets";
-}
+export type { Channel } from "../core/config";
+export { channelOf } from "../core/payments";
 
 const KINDS = ["sales", "refunds", "collections", "supplierPayments", "purchasePayments", "purchaseRefunds", "expenses", "advances", "treasuryIn", "treasuryOut"] as const;
 type Kind = (typeof KINDS)[number];
@@ -57,13 +52,13 @@ export function computeCashFlow(db: SqlDriver, fromIso: string | null, toIso: st
   for (const r of db.all<any>(`SELECT * FROM sales_returns`)) {
     const cash = Number(r.cashRefund ?? 0) || 0;
     if (r.invoiceId) refundsBySale.set(String(r.invoiceId), (refundsBySale.get(String(r.invoiceId)) ?? 0) + cash);
-    if (inWindow(r.createdAt)) add(channelOf(r.refundMethod || "نقدي"), "refunds", cash);
+    if (inWindow(r.createdAt)) add(channelOf(r.refundMethod || cashMethod()), "refunds", cash);
   }
 
   for (const s of db.all<any>(`SELECT id, paymentMethod, total, paidAmount, createdAt FROM sales`)) {
     if (!inWindow(s.createdAt)) continue;
-    const method = s.paymentMethod || "نقدي";
-    const isCredit = channelOf(method) === "cash" && !["نقدي", "كاش", "cash"].includes(String(method).trim().toLowerCase());
+    const method = s.paymentMethod || cashMethod();
+    const isCredit = isCreditMethod(method);
     const paidNow = Number(s.paidAmount) || 0;
     const original = paidNow + (refundsBySale.get(String(s.id)) ?? 0);
     // the drawer keeps at most the invoice total (any change is handed back immediately)

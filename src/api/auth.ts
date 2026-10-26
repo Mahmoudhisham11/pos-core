@@ -12,7 +12,7 @@ import type { Router } from "../http/router";
 import { serializeRow } from "../http/serialize";
 
 // Hash used to keep login timing similar when the user does not exist.
-const DUMMY_HASH = hashPassword("nelly-dummy-password");
+const DUMMY_HASH = hashPassword("pos-dummy-password");
 
 export function userPayload(user: Record<string, any>) {
   const role = normalizeRole(user.role);

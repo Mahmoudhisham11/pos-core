@@ -3,7 +3,7 @@ import { withActor } from "../core/actor";
 import { HttpError } from "./errors";
 import type { ApiRequest, ApiResponse, AuthUser, Ctx, Handler, RouteOpts } from "./types";
 
-const RESPONSE = Symbol("nelly.response");
+const RESPONSE = Symbol("pos.response");
 /** Return from a handler to send a status other than 200 (e.g. 201 / 204). */
 export const respond = (status: number, body: any) => ({ [RESPONSE]: true, status, body });
 

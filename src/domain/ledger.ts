@@ -7,6 +7,7 @@
  * the row (see `saveRow` in common.ts).
  */
 import { utcnowIso } from "../core/timeutil";
+import { cashMethod } from "../core/payments";
 import { badRequest, dumps, loadsList, money, newId } from "./common";
 
 type Entity = Record<string, any>;
@@ -45,7 +46,7 @@ export function customerSetBalance(cust: Entity, newBalance: number): void {
   cust.balance = cust.remainingBalance;
 }
 
-export function customerPayment(cust: Entity, amount: number, notes = "", method = "نقدي"): Record<string, any> {
+export function customerPayment(cust: Entity, amount: number, notes = "", method = cashMethod()): Record<string, any> {
   amount = money(amount);
   if (amount <= 0) throw badRequest("المبلغ يجب أن يكون أكبر من صفر", "INVALID_AMOUNT");
   const prev = money(cust.remainingBalance);
@@ -54,14 +55,14 @@ export function customerPayment(cust: Entity, amount: number, notes = "", method
   cust.updatedAt = utcnowIso();
   const tx = makeTx(
     "ctx", "سداد دفعة حساب", amount, prev, cust.remainingBalance,
-    (notes || "").trim() || "سداد دفعة حساب نقدية من العميل", method || "نقدي",
+    (notes || "").trim() || "سداد دفعة حساب نقدية من العميل", method || cashMethod(),
   );
   appendTx(cust, tx);
   return tx;
 }
 
 export function supplierMovement(
-  supp: Entity, amount: number, kind = "payment", notes = "", method = "نقدي",
+  supp: Entity, amount: number, kind = "payment", notes = "", method = cashMethod(),
 ): Record<string, any> {
   amount = money(amount);
   if (amount <= 0) throw badRequest("المبلغ يجب أن يكون أكبر من صفر", "INVALID_AMOUNT");
@@ -84,7 +85,7 @@ export function supplierMovement(
   supp.remainingBalance = money(next);
   supp.balance = supp.remainingBalance;
   supp.updatedAt = utcnowIso();
-  const tx = makeTx("tx", txType, amount, prev, supp.remainingBalance, (notes || "").trim() || defaultNote, method || "نقدي");
+  const tx = makeTx("tx", txType, amount, prev, supp.remainingBalance, (notes || "").trim() || defaultNote, method || cashMethod());
   appendTx(supp, tx);
   return tx;
 }

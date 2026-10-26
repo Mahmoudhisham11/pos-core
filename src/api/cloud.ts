@@ -1,3 +1,4 @@
+import { collectionTableMap } from "../core/syncHooks";
 import { appException, normalizeRole } from "../core/auth";
 import { boundShop, CLOUD_LINK, getMeta, setMeta, type CloudLink } from "../core/cloudAccount";
 import { hashPassword } from "../core/security";
@@ -72,7 +73,7 @@ export function registerCloud(router: Router): void {
     const cursors = ctx.body?.cursors;
     if (!cursors || typeof cursors !== "object") throw appException(422, "cursors required", "VALIDATION_ERROR");
     for (const [col, ms] of Object.entries(cursors)) {
-      if (!/^nelly_[a-z_]+$/.test(col) || !Number.isFinite(Number(ms))) continue;
+      if (!(col in collectionTableMap()) || !Number.isFinite(Number(ms))) continue;
       const prev = Number(getMeta(ctx.db, `cursor:${col}`)) || 0;
       if (Number(ms) > prev) setMeta(ctx.db, `cursor:${col}`, String(Math.trunc(Number(ms)))); // only moves forward
     }

@@ -1,6 +1,6 @@
 import { appException, requireAdmin } from "../core/auth";
 import { hashPassword, isBcryptHash, verifyPassword } from "../core/security";
-import { COLLECTION_TABLE_MAP, TABLE_COLLECTION_MAP } from "../core/syncHooks";
+import { collectionTableMap, tableCollectionMap } from "../core/syncHooks";
 import { isNewer, utcnowIso } from "../core/timeutil";
 import { Validator, validationFailed } from "../core/validation";
 import { TABLE_COLUMNS, type ColumnMeta } from "../db/schema";
@@ -107,7 +107,7 @@ function mergeLedgers(table: string, row: any, data: Record<string, any>, fields
 
 /** Apply a single remote change. */
 function applyOne(db: SqlDriver, item: ApplyRemoteChange, pending: Set<string>): Outcome {
-  const table = COLLECTION_TABLE_MAP[item.collectionName];
+  const table = collectionTableMap()[item.collectionName];
   if (!table) return "ignored";
   const docId = String(item.docId);
 
@@ -293,7 +293,7 @@ export function registerSync(router: Router): void {
       return {
         id: it.id,
         tableName: it.tableName,
-        collectionName: TABLE_COLLECTION_MAP[it.tableName] ?? it.tableName,
+        collectionName: tableCollectionMap()[it.tableName] ?? it.tableName,
         recordId: it.recordId,
         action: it.action,
         payload,
@@ -332,7 +332,7 @@ export function registerSync(router: Router): void {
     const item = parseItem(v, ctx.body, "");
     v.done();
     if (!item) throw validationFailed([]);
-    if (!(item.collectionName in COLLECTION_TABLE_MAP)) {
+    if (!(item.collectionName in collectionTableMap())) {
       throw appException(400, `Collection ${item.collectionName} not recognized`, "VALIDATION_ERROR");
     }
     const result = applyItems(ctx.db, [item]);

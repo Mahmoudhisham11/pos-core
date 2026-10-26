@@ -4,6 +4,7 @@ import { serializeList, serializeRow } from "../http/serialize";
 import type { Router } from "../http/router";
 import { utcnowIso } from "../core/timeutil";
 import { requireManager } from "../core/auth";
+import { cashMethod } from "../core/payments";
 import { bodyObject, dumps, loadsIds, loadsList, money, pyStr } from "./partiesCommon";
 
 export function registerExpenses(router: Router): void {
@@ -96,7 +97,7 @@ export function registerExpenses(router: Router): void {
       amount,
       date: String(data.date || now.slice(0, 10)).slice(0, 10),
       notes: pyStr(data.notes || "").trim() || "إضافة مصروف",
-      method: data.method || "نقدي",
+      method: data.method || cashMethod(),
       createdAt: now,
     };
     const existing = ctx.db.get<any>(`SELECT * FROM monthly_expenses WHERE itemId=? AND (month=? OR monthStr=?) LIMIT 1`, [itemId, month, month]);

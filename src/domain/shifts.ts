@@ -5,8 +5,7 @@ import { cairoDateStr, utcnowIso, endOfCairoDay } from "../core/timeutil";
 import { serializeRow } from "../http/serialize";
 import { dumps, loadsList, money, newId } from "./common";
 import { computeCashFlow, openShiftStart } from "./cashflow";
-
-export const PAYMENT_METHODS = ["نقدي", "فيزا", "تحويل", "آجل"];
+import { cashMethod, methodNames } from "../core/payments";
 
 export function openSales(db: SqlDriver): any[] {
   return db.all(`SELECT * FROM sales WHERE shiftReportId IS NULL ORDER BY createdAt ASC`);
@@ -36,7 +35,7 @@ export function buildReport(db: SqlDriver, sales: any[], o: BuildReportOpts): an
   const totalExpenses = o.totalExpenses ?? cash.byKind.expenses;
   const totals = { sales: 0, cost: 0, profit: 0, discount: 0, paid: 0 };
   const breakdown: Record<string, number> = {};
-  for (const m of PAYMENT_METHODS) breakdown[m] = 0.0;
+  for (const m of methodNames()) breakdown[m] = 0.0;
   const invoices: any[] = [];
   let itemsSold = 0.0;
 
@@ -47,7 +46,7 @@ export function buildReport(db: SqlDriver, sales: any[], o: BuildReportOpts): an
     totals.profit += s.totalProfit || 0.0;
     totals.discount += s.discount || 0.0;
     totals.paid += s.paidAmount || 0.0;
-    const method = s.paymentMethod || "نقدي";
+    const method = s.paymentMethod || cashMethod();
     breakdown[method] = (breakdown[method] ?? 0.0) + (s.total || 0.0);
     const lines = loadsList(s.items);
     itemsSold += lines.length ? lines.reduce((a, i) => a + Number(i.quantity || 0), 0) : 0.0;
@@ -100,7 +99,7 @@ export function refreshReport(db: SqlDriver, reportId: string, nowIso: string): 
   const sales = db.all<any>(`SELECT * FROM sales WHERE shiftReportId=? ORDER BY createdAt ASC`, [reportId]);
   const totals = { sales: 0, cost: 0, profit: 0, discount: 0, paid: 0 };
   const breakdown: Record<string, number> = {};
-  for (const m of PAYMENT_METHODS) breakdown[m] = 0.0;
+  for (const m of methodNames()) breakdown[m] = 0.0;
   let itemsSold = 0;
   for (const s of sales) {
     totals.sales += s.total || 0;
@@ -108,7 +107,7 @@ export function refreshReport(db: SqlDriver, reportId: string, nowIso: string): 
     totals.profit += s.totalProfit || 0;
     totals.discount += s.discount || 0;
     totals.paid += s.paidAmount || 0;
-    const method = s.paymentMethod || "نقدي";
+    const method = s.paymentMethod || cashMethod();
     breakdown[method] = (breakdown[method] ?? 0) + (s.total || 0);
     itemsSold += loadsList(s.items).reduce((a, i) => a + Number(i.quantity || 0), 0);
   }

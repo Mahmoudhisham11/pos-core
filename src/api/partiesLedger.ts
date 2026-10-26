@@ -1,6 +1,7 @@
 // Customer / supplier running-account ledger (port of the parts of domain/ledger.py the parties endpoints use).
 // Pure helpers: they return the column patch to write, the caller persists it in its own transaction.
 import { uid } from "../db/sql";
+import { cashMethod } from "../core/payments";
 import { badRequest } from "../http/errors";
 import { dumps, loadsList, money } from "./partiesCommon";
 
@@ -28,7 +29,7 @@ export function customerPayment(cust: Record<string, any>, amountIn: unknown, no
   if (amount <= 0) throw badRequest("المبلغ يجب أن يكون أكبر من صفر", "INVALID_AMOUNT");
   const prev = money(cust.remainingBalance);
   const bal = money(prev - amount);
-  const tx = makeTx("ctx", "سداد دفعة حساب", amount, prev, bal, (notes || "").trim() || "سداد دفعة حساب نقدية من العميل", method || "نقدي", {}, nowIso);
+  const tx = makeTx("ctx", "سداد دفعة حساب", amount, prev, bal, (notes || "").trim() || "سداد دفعة حساب نقدية من العميل", method || cashMethod(), {}, nowIso);
   const patch = {
     remainingBalance: bal, balance: bal, totalPaid: money((cust.totalPaid || 0) + amount),
     updatedAt: nowIso, transactions: appended(cust, tx),
@@ -54,7 +55,7 @@ export function supplierMovement(supp: Record<string, any>, amountIn: unknown, k
     txType = "سداد دفعة"; defaultNote = "سداد دفعة حساب للمورد";
   }
   const bal = money(next);
-  const tx = makeTx("tx", txType, amount, prev, bal, (notes || "").trim() || defaultNote, method || "نقدي", {}, nowIso);
+  const tx = makeTx("tx", txType, amount, prev, bal, (notes || "").trim() || defaultNote, method || cashMethod(), {}, nowIso);
   Object.assign(patch, { remainingBalance: bal, balance: bal, updatedAt: nowIso, transactions: appended(supp, tx) });
   return { tx, patch };
 }

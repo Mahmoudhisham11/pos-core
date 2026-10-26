@@ -4,6 +4,8 @@ import { serializeRow } from "../http/serialize";
 import type { Router } from "../http/router";
 import { utcnowIso } from "../core/timeutil";
 import { requireManager } from "../core/auth";
+import { settings } from "../core/config";
+import { canonicalMethod, cashMethod } from "../core/payments";
 import * as idempotency from "../core/idempotency";
 import { bodyObject, getKey, intQuery, jsonField, money } from "./partiesCommon";
 
@@ -11,12 +13,8 @@ const DEPOSIT_TYPES = new Set(["إيداع", "deposit", "in"]);
 const WITHDRAW_TYPES = new Set(["سحب", "withdraw", "withdrawal", "out"]);
 const TRANSFER_TYPES = new Set(["تحويل", "transfer"]);
 const KNOWN_TYPES = new Set([...DEPOSIT_TYPES, ...WITHDRAW_TYPES, ...TRANSFER_TYPES]);
-const CASH_ALIASES: Record<string, string> = { "كاش": "نقدي", cash: "نقدي" };
-
-function method(value: unknown): string {
-  const clean = (value ? String(value) : "نقدي").trim() || "نقدي";
-  return Object.prototype.hasOwnProperty.call(CASH_ALIASES, clean.toLowerCase()) ? CASH_ALIASES[clean.toLowerCase()]! : clean;
-}
+/** Account a treasury movement uses: the configured method name ("cash" / "كاش" -> the cash method). */
+const method = (value: unknown): string => canonicalMethod(value);
 
 function present(tx: Record<string, any>): Record<string, any> {
   const row = serializeRow(tx);
@@ -82,7 +80,7 @@ export function registerTreasury(router: Router): void {
 
   // Balances per payment method derived from the manual treasury ledger (negative balances are shown as-is).
   router.get("/treasury/accounts", (ctx) => {
-    const balances = new Map<string, number>([["نقدي", 0]]);
+    const balances = new Map<string, number>([[cashMethod(), 0]]);
     const add = (k: string, d: number) => balances.set(k, (balances.get(k) ?? 0) + d);
     for (const t of ctx.db.all<any>(`SELECT * FROM treasury_transactions`)) {
       const m = method(t.fromMethod);
@@ -97,8 +95,8 @@ export function registerTreasury(router: Router): void {
     return [...balances.entries()].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([name, bal]) => ({
       id: `acc-${name}`,
       name,
-      account_type: name === "نقدي" ? "CASH" : "OTHER",
-      currency: "EGP",
+      account_type: name === cashMethod() ? "CASH" : "OTHER",
+      currency: settings.CURRENCY,
       current_balance: money(bal),
       is_active: true,
     }));

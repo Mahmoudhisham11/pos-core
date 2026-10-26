@@ -1,28 +1,45 @@
+import { settings } from "./config";
+
 /**
- * collection -> table (port of sync_hooks.COLLECTION_TABLE_MAP). Users are pulled from the cloud but never pushed.
+ * Cloud collection <-> local table (port of sync_hooks.COLLECTION_TABLE_MAP). The collection names are
+ * `settings.COLLECTION_PREFIX` + the suffix below, so every app built on this core keeps its own names
+ * (prefix "nelly_" -> "nelly_sales"...). Users are pulled from the cloud but never pushed.
  * The outbox capture itself lives in db/sql.ts (insertRow/updateRow/deleteRow).
  */
-export const COLLECTION_TABLE_MAP: Record<string, string> = {
-  nelly_users: "users",
-  nelly_shop_products: "shop_products",
-  nelly_products: "products",
-  nelly_transfers: "transfers",
-  nelly_sales: "sales",
-  nelly_reports: "shift_reports",
-  nelly_returns: "sales_returns",
-  nelly_customers: "customers",
-  nelly_suppliers: "suppliers",
-  nelly_shop_purchases: "shop_purchases",
-  nelly_shop_purchase_returns: "shop_purchase_returns",
-  nelly_employees: "employees",
-  nelly_employee_attendance: "employee_attendance",
-  nelly_employee_transactions: "employee_transactions",
-  nelly_expense_items: "expense_items",
-  nelly_monthly_expenses: "monthly_expenses",
-  nelly_treasury_transactions: "treasury_transactions",
-  nelly_stock_movements: "stock_movements",
-};
+const SUFFIX_TABLE: Array<[string, string]> = [
+  ["users", "users"],
+  ["shop_products", "shop_products"],
+  ["products", "products"],
+  ["transfers", "transfers"],
+  ["sales", "sales"],
+  ["reports", "shift_reports"],
+  ["returns", "sales_returns"],
+  ["customers", "customers"],
+  ["suppliers", "suppliers"],
+  ["shop_purchases", "shop_purchases"],
+  ["shop_purchase_returns", "shop_purchase_returns"],
+  ["employees", "employees"],
+  ["employee_attendance", "employee_attendance"],
+  ["employee_transactions", "employee_transactions"],
+  ["expense_items", "expense_items"],
+  ["monthly_expenses", "monthly_expenses"],
+  ["treasury_transactions", "treasury_transactions"],
+  ["stock_movements", "stock_movements"],
+];
 
-export const TABLE_COLLECTION_MAP: Record<string, string> = Object.fromEntries(
-  Object.entries(COLLECTION_TABLE_MAP).map(([c, t]) => [t, c]),
-);
+let cache: { prefix: string; c2t: Record<string, string>; t2c: Record<string, string> } | null = null;
+
+function maps() {
+  const prefix = settings.COLLECTION_PREFIX ?? "";
+  if (!cache || cache.prefix !== prefix) {
+    const c2t = Object.fromEntries(SUFFIX_TABLE.map(([s, t]) => [prefix + s, t]));
+    const t2c = Object.fromEntries(SUFFIX_TABLE.map(([s, t]) => [t, prefix + s]));
+    cache = { prefix, c2t, t2c };
+  }
+  return cache;
+}
+
+/** collection name -> table, for the configured prefix. */
+export const collectionTableMap = (): Record<string, string> => maps().c2t;
+/** table -> collection name, for the configured prefix. */
+export const tableCollectionMap = (): Record<string, string> => maps().t2c;
